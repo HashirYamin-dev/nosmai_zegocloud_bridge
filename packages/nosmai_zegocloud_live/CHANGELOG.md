@@ -12,5 +12,8 @@
 - End of live is signalled twice (room command and the stream's extra info), so a viewer also learns of it when
   the command is lost; the viewer prefers the newest stream that plays and skips dead leftovers.
 - `renewToken()` on broadcaster and viewer, `tokenExpiresAt` set when ZEGOCLOUD warns of expiry.
+- Viewers no longer see a zoomed-in picture when Nosmai's frames are not 9:16: the encoder follows the real
+  frame shape (ZEGO crops custom-capture frames to the configured size by default), and the capture fill
+  mode is ASPECT_FIT, so nothing is ever cropped.
 - The ZEGO engine is released 30 s after a live ends (nothing stays running when idle).
 - Viewer renders through ZEGO into a `TextureView` (no hybrid composition) and needs no permissions.

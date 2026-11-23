@@ -107,6 +107,9 @@ internal class ZegoSession(private val appContext: Context) {
     private val others = HashSet<String>()
     private var onlineCount = 0
     private var leaving: Runnable? = null
+    /** Frame size ZEGO is told to expect and the size it encodes (broadcaster); both follow Nosmai's frame shape. */
+    private var captureSize = Pair(0, 0)
+    private var encodeSize = Pair(0, 0)
     /** Destroys the idle engine so a finished live holds no ZEGO threads, memory or audio. */
     private val idleRelease = Runnable { releaseEngine() }
 
@@ -297,12 +300,11 @@ internal class ZegoSession(private val appContext: Context) {
         zego.setStreamExtraInfo("", null)
         // Viewers must see exactly the Nosmai preview, as rendered.
         zego.setVideoMirrorMode(ZegoVideoMirrorMode.NO_MIRROR)
-        zego.setVideoConfig(ZegoVideoConfig().apply {
-            setCaptureResolution(join.encodeWidth, join.encodeHeight)
-            setEncodeResolution(join.encodeWidth, join.encodeHeight)
-            setVideoFPS(join.fps)
-            setVideoBitrate(join.bitrateKbps)
-        })
+        // The encoder is resized to the real frame shape on the first frame (see followFrameSize);
+        // until then, and if sizes ever differ, ZEGO must not crop (its default is a centre crop).
+        zego.setCustomVideoCaptureFillMode(ZegoViewMode.ASPECT_FIT, ZegoPublishChannel.MAIN)
+        applyEncodeSize(zego, join, Pair(join.encodeWidth, join.encodeHeight), Pair(join.encodeWidth, join.encodeHeight))
+        videoSource.onFrameSize = { w, h -> main.post { guard("followFrameSize") { followFrameSize(join, w, h) } } }
         // Bad network: keep the frame rate and lower resolution, or let ZEGO lower both.
         val property = if (join.prioritizeFrameRate) {
             ZegoTrafficControlProperty.ADAPTIVE_RESOLUTION.value()
@@ -314,6 +316,32 @@ internal class ZegoSession(private val appContext: Context) {
         zego.mutePublishStreamAudio(join.micMuted || !join.publishAudio)
         zego.mutePublishStreamVideo(join.videoMuted)
         videoSource.setPaused(join.videoMuted)
+    }
+
+    private fun applyEncodeSize(zego: ZegoExpressEngine, join: JoinRequest, capture: Pair<Int, Int>, encode: Pair<Int, Int>) {
+        captureSize = capture
+        encodeSize = encode
+        zego.setVideoConfig(ZegoVideoConfig().apply {
+            setCaptureResolution(capture.first, capture.second)
+            setEncodeResolution(encode.first, encode.second)
+            setVideoFPS(join.fps)
+            setVideoBitrate(join.bitrateKbps)
+        })
+    }
+
+    /**
+     * Nosmai's frame shape follows its camera/preview, not the configured size. A stream encoded
+     * at another shape would be cropped (zoomed in) for viewers, so the encoder takes the frames'
+     * shape instead, with the configured long side as its limit.
+     */
+    private fun followFrameSize(join: JoinRequest, width: Int, height: Int) {
+        if (request !== join || !join.host || leaving != null) return
+        if (captureSize == Pair(width, height)) return
+        val zego = engine ?: return
+        // Same shape as the frames, within the configured long side (never upscaled).
+        val encode = I420Converter.alignedSize(width, height, maxOf(join.encodeWidth, join.encodeHeight))
+        Log.i(TAG, "Encoder follows the frame size ${width}x$height -> ${encode.first}x${encode.second}")
+        applyEncodeSize(zego, join, Pair(width, height), encode)
     }
 
     private fun onLoginResult(join: JoinRequest, code: Int) {
@@ -617,8 +645,8 @@ internal class ZegoSession(private val appContext: Context) {
         stats["secondsLive"] = if (joinedAtMs > 0) (System.currentTimeMillis() - joinedAtMs) / 1000 else 0
         if (current.host) {
             stats["micMuted"] = micMuted || !current.publishAudio
-            stats["width"] = current.encodeWidth
-            stats["height"] = current.encodeHeight
+            stats["width"] = encodeSize.first.takeIf { it > 0 } ?: current.encodeWidth
+            stats["height"] = encodeSize.second.takeIf { it > 0 } ?: current.encodeHeight
             publishQuality?.let { q ->
                 stats["fps"] = q.videoSendFPS
                 stats["encodeFps"] = q.videoEncodeFPS
@@ -673,6 +701,8 @@ internal class ZegoSession(private val appContext: Context) {
     private fun resetState() {
         request = null
         source = null
+        captureSize = Pair(0, 0)
+        encodeSize = Pair(0, 0)
         loggedIn = false
         joinedAtMs = 0L
         foreground = true
