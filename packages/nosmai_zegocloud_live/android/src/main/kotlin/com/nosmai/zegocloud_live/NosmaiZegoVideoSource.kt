@@ -73,6 +73,14 @@ internal class NosmaiZegoVideoSource(
     @Volatile private var lastError = ""
     @Volatile private var lastWidth = 0
     @Volatile private var lastHeight = 0
+    private var announcedWidth = 0
+    private var announcedHeight = 0
+
+    /**
+     * Called (on the sending thread) when the frames' size differs from the last one sent, with
+     * the new size. The session resizes the encoder to match, so ZEGO never has to crop or pad.
+     */
+    @Volatile var onFrameSize: ((Int, Int) -> Unit)? = null
     private val copyPending = AtomicBoolean(false)
     private var nextDeadlineNs = 0L // Nosmai render/callback thread only.
 
@@ -355,6 +363,11 @@ internal class NosmaiZegoVideoSource(
         sent.incrementAndGet()
         lastWidth = width
         lastHeight = height
+        if (width != announcedWidth || height != announcedHeight) {
+            announcedWidth = width
+            announcedHeight = height
+            onFrameSize?.invoke(width, height)
+        }
     }
 
     private fun recordConvert(ns: Long) {
@@ -429,6 +442,7 @@ internal class NosmaiZegoVideoSource(
         }
         lastStatsAtMs = 0L; lastStatsSent = 0L; lastStatsIn = 0L; lastStatsConvertNs = 0L; lastStatsSendNs = 0L
         lastWidth = 0; lastHeight = 0; lastError = ""; paused = false
+        announcedWidth = 0; announcedHeight = 0
     }
 
     private fun registerThermalListener() {
